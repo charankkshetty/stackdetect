@@ -29,13 +29,16 @@ from typing import Any
 
 import httpx
 
-from app.patterns import CT_PATTERNS
+from app.patterns import CT_PATTERNS, is_vendor_domain
 
 CRT_SH_URL = "https://crt.sh/?q=%25.{domain}&output=json"
 TIMEOUT_SECONDS = 8.0
 
 STATUS_OK = "ok"
 STATUS_UNAVAILABLE = "unavailable"
+# The target is a vendor's own domain: skipped, so we never report the Airflow
+# project as an Airflow user. See VENDOR_DOMAINS in app/patterns.py.
+STATUS_VENDOR_EXCLUDED = "vendor_domain_excluded"
 
 # crt.sh rejects a request with no User-Agent often enough to be worth setting.
 _HEADERS = {"User-Agent": "stackdetect/0.1 (+https://github.com/charankkshetty/stackdetect)"}
@@ -122,7 +125,17 @@ async def detect(domain: str, client: httpx.AsyncClient | None = None) -> dict:
     self_hosted and self_hosted_orchestrator. Never raises on a network or
     parse failure.
     """
-    url = CRT_SH_URL.format(domain=domain.strip().lower())
+    domain = domain.strip().lower().rstrip(".")
+
+    # Bail before any network work — a vendor's own domain is not a prospect.
+    if is_vendor_domain(domain):
+        return {
+            "ct_status": STATUS_VENDOR_EXCLUDED,
+            "tools": [],
+            "hostnames_found": 0,
+        }
+
+    url = CRT_SH_URL.format(domain=domain)
     owns_client = client is None
     if owns_client:
         client = httpx.AsyncClient(timeout=TIMEOUT_SECONDS, headers=_HEADERS)
@@ -160,6 +173,10 @@ if __name__ == "__main__":
             for domain in domains:
                 print(f"\n{'=' * 62}\n{domain}\n{'=' * 62}")
                 result = await detect(domain, client)
+                if result["ct_status"] == STATUS_VENDOR_EXCLUDED:
+                    print("ct_status: vendor_domain_excluded")
+                    print("  vendor's own domain — not a prospect, nothing scanned")
+                    continue
                 print(
                     f"ct_status: {result['ct_status']}   "
                     f"hostnames seen: {result['hostnames_found']}"

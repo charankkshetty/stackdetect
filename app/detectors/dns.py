@@ -34,7 +34,7 @@ from typing import Any
 
 import httpx
 
-from app.patterns import MANAGED_SAAS_PATTERNS, SELF_HOSTED_PATTERNS
+from app.patterns import MANAGED_SAAS_PATTERNS, SELF_HOSTED_PATTERNS, is_vendor_domain
 
 GOOGLE_DOH = "https://dns.google/resolve"
 CLOUDFLARE_DOH = "https://cloudflare-dns.com/dns-query"
@@ -42,6 +42,9 @@ TIMEOUT_SECONDS = 5.0
 
 STATUS_OK = "ok"
 STATUS_UNAVAILABLE = "unavailable"
+# The target is a vendor's own domain: skipped, so we never report the Airflow
+# project as an Airflow user. See VENDOR_DOMAINS in app/patterns.py.
+STATUS_VENDOR_EXCLUDED = "vendor_domain_excluded"
 
 # DNS record type numbers as they appear in a DoH Answer.
 _TYPE_A = 1
@@ -230,6 +233,19 @@ async def detect(domain: str, client: httpx.AsyncClient | None = None) -> dict:
     counts hosts that actually have a record. Never raises on a failure.
     """
     domain = domain.strip().lower().rstrip(".")
+
+    # Bail before any network work — a vendor's own domain is not a prospect.
+    if is_vendor_domain(domain):
+        return {
+            "dns_status": STATUS_VENDOR_EXCLUDED,
+            "tools": [],
+            "wildcard_dns": False,
+            "hosts_checked": 0,
+            "hosts_resolved": 0,
+            "hosts_existing": 0,
+            "hosts_unavailable": 0,
+        }
+
     owns_client = client is None
     if owns_client:
         client = httpx.AsyncClient(timeout=TIMEOUT_SECONDS, headers=_HEADERS)
@@ -279,6 +295,10 @@ if __name__ == "__main__":
             for domain in domains:
                 print(f"\n{'=' * 66}\n{domain}\n{'=' * 66}")
                 result = await detect(domain, client)
+                if result["dns_status"] == STATUS_VENDOR_EXCLUDED:
+                    print("dns_status: vendor_domain_excluded")
+                    print("  vendor's own domain — not a prospect, nothing scanned")
+                    continue
                 print(
                     f"dns_status: {result['dns_status']}   "
                     f"{result['hosts_existing']}/{result['hosts_checked']} hosts exist"

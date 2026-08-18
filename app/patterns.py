@@ -61,3 +61,50 @@ MANAGED_SAAS_PATTERNS = [
 # What ct_logs.py applies: self-hosted only. The managed patterns are excluded
 # because a %.{domain} query can never surface them (see module docstring).
 CT_PATTERNS = SELF_HOSTED_PATTERNS
+
+
+# --------------------------------------------------------------------------
+# Vendor / project domains
+# --------------------------------------------------------------------------
+#
+# The data-tool vendors' and projects' OWN domains. A vendor running its own
+# software is not a sales prospect, and reporting "apache.org runs Apache
+# Airflow" inflates any accuracy measurement with a claim nobody would act on.
+#
+# THIS IS NOT A FILTER ON OPEN SOURCE. A normal company running self-hosted
+# Airflow, Superset or Metabase is exactly the target and must stay in —
+# nubank.com.br running self-hosted Airflow is the signal we are built to find.
+# Only these specific vendor-owned domains are excluded.
+#
+# Pure data: extend by adding a domain.
+VENDOR_DOMAINS = frozenset({
+    "apache.org",
+    "superset.apache.org",
+    "dagster.io",
+    "dagster.cloud",
+    "prefect.io",
+    "getdbt.com",
+    "dbt.com",
+    "astronomer.io",
+    "snowflake.com",
+    "databricks.com",
+    "coalescesoftware.io",
+    "kestra.io",
+    "metabase.com",
+    "looker.com",
+    "collibra.com",
+    "montecarlodata.com",
+    "getmontecarlo.com",
+})
+
+
+def is_vendor_domain(domain: str) -> bool:
+    """True if `domain` is a vendor's own domain, or a subdomain of one.
+
+    The one predicate that lives beside this data, so both ct_logs.py and
+    dns.py share a single implementation of the membership rule rather than
+    each carrying its own copy. Subdomains count, so www.apache.org and
+    airflow.apache.org are both excluded, while notapache.org is not.
+    """
+    d = (domain or "").strip().lower().rstrip(".")
+    return any(d == vendor or d.endswith(f".{vendor}") for vendor in VENDOR_DOMAINS)
