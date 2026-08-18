@@ -1,23 +1,27 @@
 """stackdetect — FastAPI entrypoint.
 
-Deploy-first skeleton: /scan returns a HARDCODED stub verdict so the whole
-loop (browser -> API -> table) can be tested on Railway before any detector
-exists. Real detection lands in app/orchestrator.py in a later step.
+GET /       the scan page
+GET /health liveness
+POST /scan  scan one domain and return its verdict
+
+Detection lives in app/orchestrator.py; credit safety lives in app/ledger.py.
+This module stays thin: request in, verdict out.
 """
 
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+
+from app import ledger, orchestrator
 
 STATIC_DIR = Path(__file__).parent / "static"
 
 app = FastAPI(title="stackdetect", version="0.1.0")
 
-# Open CORS so the static page can call the API from any origin (including a
-# file:// page or a different Railway domain).
+# Open CORS so the static page can call the API from any origin.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -42,27 +46,22 @@ def health() -> dict:
 
 
 @app.post("/scan")
-def scan(req: ScanRequest) -> dict:
-    """STUB. Returns a fixed verdict shaped like the real one.
+async def scan(req: ScanRequest) -> dict:
+    """Scan one domain.
 
-    Replace the body with app.orchestrator.scan(req.domain) once the free
-    detectors exist.
+    A detector failure never reaches here — the orchestrator isolates each one
+    and reports its status in signals_summary. Only invalid input is rejected.
     """
-    return {
-        "domain": req.domain,
-        "tools": [
-            {
-                "tool": "Snowflake",
-                "signal": "ct_log",
-                "confidence": 0.95,
-                "evidence": "acme.snowflakecomputing.com",
-            }
-        ],
-        "self_hosted_orchestrator": False,
-        "credits": {
-            "apollo_used": 0,
-            "apollo_cap": 300,
-            "parallel_used": 0,
-            "parallel_cap": 300,
-        },
-    }
+    domain = (req.domain or "").strip().lower().rstrip(".")
+    if not domain:
+        raise HTTPException(status_code=400, detail="domain is required")
+    try:
+        ledger.normalise_domain(domain)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"not a valid domain: {req.domain!r}")
+
+    verdict = await orchestrator.scan(domain)
+    # Real ledger counts, not placeholders. Nothing paid runs yet, so these
+    # stay at zero until the enrichers are wired in.
+    verdict["credits"] = ledger.usage()
+    return verdict
