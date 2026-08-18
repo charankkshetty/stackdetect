@@ -33,9 +33,10 @@ _CLIENT_TIMEOUT = ct_logs.TIMEOUT_SECONDS
 _HEADERS = {"User-Agent": "stackdetect/0.1 (+https://github.com/charankkshetty/stackdetect)"}
 
 # suffix_list_urls=() pins tldextract to its bundled Public Suffix List
-# snapshot: no network fetch on first use and no cache writes, both of which
-# are liabilities on an ephemeral container.
-_EXTRACT = tldextract.TLDExtract(suffix_list_urls=())
+# snapshot, so there is no network fetch on first use. cache_dir=None disables
+# the disk cache: on an ephemeral container it buys nothing, and an unwritable
+# HOME makes tldextract warn on every start.
+_EXTRACT = tldextract.TLDExtract(suffix_list_urls=(), cache_dir=None)
 
 _CT_FALLBACK = {"ct_status": STATUS_ERROR, "tools": [], "hostnames_found": 0}
 _DNS_FALLBACK = {

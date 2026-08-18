@@ -8,6 +8,7 @@ Detection lives in app/orchestrator.py; credit safety lives in app/ledger.py.
 This module stays thin: request in, verdict out.
 """
 
+import os
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -42,7 +43,16 @@ def index() -> FileResponse:
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok"}
+    """Liveness, plus which build is actually running.
+
+    A 200 from /health does not tell you whether a deploy landed — the old
+    container answers it just as happily. Railway injects the commit sha, so
+    reporting it makes "is my push live?" a question with an answer.
+    """
+    return {
+        "status": "ok",
+        "commit": (os.environ.get("RAILWAY_GIT_COMMIT_SHA") or "dev")[:7],
+    }
 
 
 @app.post("/scan")
