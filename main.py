@@ -52,7 +52,10 @@ async def scan(req: ScanRequest) -> dict:
     A detector failure never reaches here — the orchestrator isolates each one
     and reports its status in signals_summary. Only invalid input is rejected.
     """
-    domain = (req.domain or "").strip().lower().rstrip(".")
+    # Accept anything reasonable a demo user might paste — a full URL, a www
+    # prefix, a deep subdomain — and reduce it to the registrable root before
+    # validating. Normalising after validation would still reject URLs.
+    domain = orchestrator.normalise_domain_input(req.domain)
     if not domain:
         raise HTTPException(status_code=400, detail="domain is required")
     try:

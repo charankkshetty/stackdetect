@@ -77,7 +77,7 @@
   <p class="method">Method: DNS + Certificate Transparency</p>
   <p class="tagline">We don't buy technographics. We resolve them.</p>
 
-  <textarea id="domains" placeholder="one domain per line&#10;acme.com&#10;example.com"></textarea>
+  <textarea id="domains" placeholder="one per line — domain or full URL&#10;https://international.nubank.com.br/&#10;www.monzo.com&#10;gocardless.com/careers"></textarea>
   <div class="row">
     <button id="scan">Scan</button>
     <span id="status"></span>
@@ -87,8 +87,9 @@
     <thead>
       <tr>
         <th>Domain</th>
+        <th>Trigger</th>
         <th>Tool</th>
-        <th>Signal</th>
+        <th>Signals</th>
         <th>Confidence</th>
         <th>Evidence</th>
         <th>Self-hosted Airflow</th>
@@ -103,6 +104,21 @@ const btn = document.getElementById("scan");
 const statusEl = document.getElementById("status");
 const tbody = document.getElementById("results");
 
+// Accept anything reasonable: full URLs, www prefixes, paths, ports, mixed
+// case. The server reduces the host to its registrable root (it needs the
+// Public Suffix List for multi-part TLDs like .com.br, which is not something
+// to reimplement here) — this just gets a clean host onto the wire.
+function normaliseLine(line) {
+  let text = (line || "").trim().toLowerCase();
+  if (!text) return "";
+  if (text.indexOf("//") !== -1) text = text.split("//")[1];
+  if (text.indexOf("@") !== -1) text = text.substring(text.lastIndexOf("@") + 1);
+  text = text.split("/")[0].split("?")[0].split("#")[0].split(":")[0];
+  text = text.trim().replace(/\.+$/, "");
+  if (text.indexOf("www.") === 0) text = text.substring(4);
+  return text;
+}
+
 function cell(row, text, cls) {
   const td = document.createElement("td");
   td.textContent = text;
@@ -115,8 +131,14 @@ function addRows(verdict) {
   tools.forEach(function (tool, i) {
     const tr = document.createElement("tr");
     cell(tr, i === 0 ? verdict.domain : "");
+    if (i === 0) {
+      cell(tr, verdict.trigger_level || "—",
+           verdict.trigger_level === "HOT" ? "flag" : "");
+    } else {
+      cell(tr, "");
+    }
     cell(tr, tool ? tool.tool : "—");
-    cell(tr, tool ? tool.signal : "—");
+    cell(tr, tool ? (tool.signals || []).join(" + ") : "—");
     cell(tr, tool ? String(tool.confidence) : "—");
     cell(tr, tool ? tool.evidence : "—", "evidence");
     if (i === 0) {
@@ -132,6 +154,7 @@ function addRows(verdict) {
 function addError(domain, message) {
   const tr = document.createElement("tr");
   cell(tr, domain);
+  cell(tr, "—");
   cell(tr, "error");
   cell(tr, "—");
   cell(tr, "—");
@@ -143,8 +166,10 @@ function addError(domain, message) {
 btn.addEventListener("click", async function () {
   const domains = document.getElementById("domains").value
     .split("\n")
-    .map(function (d) { return d.trim(); })
-    .filter(Boolean);
+    .map(normaliseLine)
+    .filter(Boolean)
+    // Two lines can normalise to the same host; scan it once.
+    .filter(function (d, i, all) { return all.indexOf(d) === i; });
 
   if (!domains.length) {
     statusEl.textContent = "Enter at least one domain.";

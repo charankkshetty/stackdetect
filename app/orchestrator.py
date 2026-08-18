@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 
 import httpx
+import tldextract
 
 from app import scoring
 from app.detectors import careers, ct_logs, dns
@@ -31,6 +32,11 @@ LEVEL_EXCLUDED = "EXCLUDED"
 _CLIENT_TIMEOUT = ct_logs.TIMEOUT_SECONDS
 _HEADERS = {"User-Agent": "stackdetect/0.1 (+https://github.com/charankkshetty/stackdetect)"}
 
+# suffix_list_urls=() pins tldextract to its bundled Public Suffix List
+# snapshot: no network fetch on first use and no cache writes, both of which
+# are liabilities on an ephemeral container.
+_EXTRACT = tldextract.TLDExtract(suffix_list_urls=())
+
 _CT_FALLBACK = {"ct_status": STATUS_ERROR, "tools": [], "hostnames_found": 0}
 _DNS_FALLBACK = {
     "dns_status": STATUS_ERROR, "tools": [], "wildcard_dns": False,
@@ -41,6 +47,48 @@ _CAREERS_FALLBACK = {
     "sources_fetched": 0, "job_pages_fetched": 0, "job_pages_capped": False,
     "hiring_data_roles": False, "data_role_count": 0, "data_roles": [],
 }
+
+
+def normalise_domain_input(raw: str) -> str:
+    """Anything a user might paste -> the registrable root domain.
+
+    Accepts full URLs, www prefixes, paths, ports and mixed case:
+        https://international.nubank.com.br/careers  -> nubank.com.br
+        www.Nubank.com.br                            -> nubank.com.br
+
+    Reducing to the REGISTRABLE ROOT is deliberate, not cosmetic. Careers
+    boards and the vanity-subdomain probes hang off the root, so scanning
+    international.nubank.com.br would check international.nubank.com.br/careers
+    and airflow.international.nubank.com.br and find nothing.
+
+    The root is derived with tldextract rather than by splitting on the last
+    two labels, because multi-part suffixes (nubank.com.br, a.co.uk) make that
+    split wrong.
+    """
+    text = (raw or "").strip().lower()
+    if not text:
+        return ""
+    # scheme
+    if "//" in text:
+        text = text.split("//", 1)[1]
+    # credentials, then path / query / fragment
+    if "@" in text:
+        text = text.rsplit("@", 1)[1]
+    for separator in ("/", "?", "#"):
+        text = text.split(separator, 1)[0]
+    # port
+    text = text.split(":", 1)[0].strip().rstrip(".")
+    if text.startswith("www."):
+        text = text[4:]
+    if not text:
+        return ""
+
+    extracted = _EXTRACT(text)
+    if extracted.domain and extracted.suffix:
+        return f"{extracted.domain}.{extracted.suffix}"
+    # No recognised suffix (localhost, an IP, junk): hand back what we have and
+    # let the caller's validator reject it.
+    return text
 
 
 def _settle(result, fallback: dict) -> dict:
@@ -102,7 +150,9 @@ def to_api_verdict(verdict: dict) -> dict:
 
 async def scan(domain: str, client: httpx.AsyncClient | None = None) -> dict:
     """Scan one domain and return the API-shaped verdict. Never raises."""
-    domain = (domain or "").strip().lower().rstrip(".")
+    # Defensive: normalise here too, so every caller of scan() — the API, a
+    # batch run, a future cron — gets identical input handling.
+    domain = normalise_domain_input(domain)
     if not domain:
         raise ValueError("domain is required")
 
