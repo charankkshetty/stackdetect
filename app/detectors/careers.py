@@ -122,6 +122,18 @@ _SCRIPT_RE = re.compile(r"<(script|style)[^>]*>.*?</\1>", re.S | re.I)
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
 _HREF_RE = re.compile(r"""href=["']([^"'>]+)["']""", re.I)
+_TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.S | re.I)
+
+# Job titles that mean the company is actively staffing its data platform.
+# scoring.py combines this with a self-hosted orchestrator to reach HOT: they
+# are running the thing AND paying people to keep it running.
+DATA_ROLE_KEYWORDS = (
+    "data engineer",
+    "platform engineer",
+    "analytics engineer",
+    "data infrastructure",
+    "data platform",
+)
 
 # Paths that look like an individual posting rather than an index.
 _JOB_PATH_RE = re.compile(
@@ -228,6 +240,20 @@ def job_links(markup: str, source_url: str, limit: int | None = None) -> list[st
 # --------------------------------------------------------------------------
 
 
+def page_title(markup: str) -> str:
+    """The <title> of a job page, cleaned. Empty string if absent."""
+    match = _TITLE_RE.search(markup or "")
+    if not match:
+        return ""
+    return _WS_RE.sub(" ", html_lib.unescape(_TAG_RE.sub(" ", match.group(1)))).strip()
+
+
+def is_data_role(title: str) -> bool:
+    """True if this job title is a data- or platform-engineering role."""
+    lowered = (title or "").lower()
+    return any(keyword in lowered for keyword in DATA_ROLE_KEYWORDS)
+
+
 def _label(url: str) -> str:
     """Short, readable source label for the evidence string."""
     parsed = urlparse(url)
@@ -328,6 +354,9 @@ async def detect(domain: str, client: httpx.AsyncClient | None = None) -> dict:
             "sources_fetched": 0,
             "job_pages_fetched": 0,
             "job_pages_capped": False,
+            "hiring_data_roles": False,
+            "data_role_count": 0,
+            "data_roles": [],
         }
 
     owns_client = client is None
@@ -365,12 +394,16 @@ async def detect(domain: str, client: httpx.AsyncClient | None = None) -> dict:
             await client.aclose()
 
     fetched_jobs = 0
+    data_roles: list[dict] = []
     for result in job_results:
         if result is None:
             continue
         final_url, markup = result
         pages.append((final_url, html_to_text(markup)))
         fetched_jobs += 1
+        title = page_title(markup)
+        if is_data_role(title):
+            data_roles.append({"title": title, "url": final_url})
 
     matches = match_text(pages)
     return {
@@ -380,6 +413,10 @@ async def detect(domain: str, client: httpx.AsyncClient | None = None) -> dict:
         "sources_fetched": len(seen_urls),
         "job_pages_fetched": fetched_jobs,
         "job_pages_capped": capped,
+        # Actively staffing the data platform — half of the HOT co-occurrence.
+        "hiring_data_roles": bool(data_roles),
+        "data_role_count": len(data_roles),
+        "data_roles": data_roles,
     }
 
 
@@ -400,6 +437,11 @@ if __name__ == "__main__":
                     f"job pages: {result['job_pages_fetched']}"
                     + ("  (capped)" if result["job_pages_capped"] else "")
                 )
+                print(
+                    f"data/platform roles hiring: {result['data_role_count']}"
+                )
+                for role in result["data_roles"][:5]:
+                    print(f"    {role['title'][:74]}")
                 print(f"\n  STACK TOOLS ({len(result['tools'])})")
                 for tool in result["tools"] or []:
                     print(f"    {tool['tool_or_trigger']:<22} {tool['confidence']}  {tool['evidence']}")
