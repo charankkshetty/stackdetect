@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>stackdetect</title>
+<style>
+  :root {
+    --bg: #0e1116;
+    --panel: #161b22;
+    --line: #262d38;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #4ea1ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 48px 24px;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.5 ui-sans-serif, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  .wrap { max-width: 900px; margin: 0 auto; }
+  h1 { margin: 0 0 6px; font-size: 30px; letter-spacing: -0.02em; }
+  .method {
+    display: inline-block;
+    margin: 0 0 4px;
+    padding: 6px 12px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: var(--panel);
+    color: var(--accent);
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .tagline { margin: 10px 0 28px; color: var(--muted); font-size: 14px; }
+  textarea {
+    width: 100%;
+    min-height: 120px;
+    padding: 12px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--panel);
+    color: var(--text);
+    font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    resize: vertical;
+  }
+  .row { display: flex; align-items: center; gap: 14px; margin: 14px 0 28px; }
+  button {
+    padding: 10px 22px;
+    border: 0;
+    border-radius: 8px;
+    background: var(--accent);
+    color: #06101d;
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  button[disabled] { opacity: 0.5; cursor: default; }
+  #status { color: var(--muted); font-size: 13px; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--line);
+    text-align: left;
+    vertical-align: top;
+  }
+  th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
+  td.evidence { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); }
+  .flag { color: #ffb454; font-weight: 700; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>stackdetect</h1>
+  <p class="method">Method: DNS + Certificate Transparency</p>
+  <p class="tagline">We don't buy technographics. We resolve them.</p>
+
+  <textarea id="domains" placeholder="one domain per line&#10;acme.com&#10;example.com"></textarea>
+  <div class="row">
+    <button id="scan">Scan</button>
+    <span id="status"></span>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Domain</th>
+        <th>Tool</th>
+        <th>Signal</th>
+        <th>Confidence</th>
+        <th>Evidence</th>
+        <th>Self-hosted Airflow</th>
+      </tr>
+    </thead>
+    <tbody id="results"></tbody>
+  </table>
+</div>
+
+<script>
+const btn = document.getElementById("scan");
+const statusEl = document.getElementById("status");
+const tbody = document.getElementById("results");
+
+function cell(row, text, cls) {
+  const td = document.createElement("td");
+  td.textContent = text;
+  if (cls) td.className = cls;
+  row.appendChild(td);
+}
+
+function addRows(verdict) {
+  const tools = verdict.tools && verdict.tools.length ? verdict.tools : [null];
+  tools.forEach(function (tool, i) {
+    const tr = document.createElement("tr");
+    cell(tr, i === 0 ? verdict.domain : "");
+    cell(tr, tool ? tool.tool : "—");
+    cell(tr, tool ? tool.signal : "—");
+    cell(tr, tool ? String(tool.confidence) : "—");
+    cell(tr, tool ? tool.evidence : "—", "evidence");
+    if (i === 0) {
+      cell(tr, verdict.self_hosted_orchestrator ? "YES" : "no",
+           verdict.self_hosted_orchestrator ? "flag" : "");
+    } else {
+      cell(tr, "");
+    }
+    tbody.appendChild(tr);
+  });
+}
+
+function addError(domain, message) {
+  const tr = document.createElement("tr");
+  cell(tr, domain);
+  cell(tr, "error");
+  cell(tr, "—");
+  cell(tr, "—");
+  cell(tr, message, "evidence");
+  cell(tr, "—");
+  tbody.appendChild(tr);
+}
+
+btn.addEventListener("click", async function () {
+  const domains = document.getElementById("domains").value
+    .split("\n")
+    .map(function (d) { return d.trim(); })
+    .filter(Boolean);
+
+  if (!domains.length) {
+    statusEl.textContent = "Enter at least one domain.";
+    return;
+  }
+
+  tbody.innerHTML = "";
+  btn.disabled = true;
+
+  // One request per line, sequential, so rows fill in as results land.
+  for (let i = 0; i < domains.length; i++) {
+    statusEl.textContent = "Scanning " + (i + 1) + " of " + domains.length + "…";
+    try {
+      const res = await fetch("/scan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ domain: domains[i] }),
+      });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      addRows(await res.json());
+    } catch (err) {
+      addError(domains[i], err.message);
+    }
+  }
+
+  statusEl.textContent = "Done — " + domains.length + " domain(s).";
+  btn.disabled = false;
+});
+</script>
+</body>
+</html>

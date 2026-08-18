@@ -1,0 +1,13 @@
+# secrets — never commit
+.env
+
+# on-disk cache: keep the directory, ignore its contents
+cache/*
+!cache/.gitkeep
+
+# python
+__pycache__/
+*.pyc
+
+# local virtualenv
+.venv/
