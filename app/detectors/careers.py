@@ -39,7 +39,12 @@ STATUS_VENDOR_EXCLUDED = "vendor_domain_excluded"
 # Bounds on how much we fetch per domain. Reported in the result rather than
 # applied silently — a capped scan must not read as a complete one.
 MAX_JOB_PAGES_PER_SOURCE = 10
-MAX_JOB_PAGES_TOTAL = 20
+# Greenhouse is where essentially all the real signal is: own-domain careers
+# pages are JS shells (26 chars of text) and Lever slug guesses 404. Sample its
+# board harder rather than spreading effort across sources that return nothing.
+MAX_JOB_PAGES_GREENHOUSE = 20
+MAX_JOB_PAGES_TOTAL = 30
+GREENHOUSE_HOSTS = ("job-boards.greenhouse.io", "boards.greenhouse.io")
 _MAX_CONCURRENCY = 8
 
 _HEADERS = {"User-Agent": "stackdetect/0.1 (+https://github.com/charankkshetty/stackdetect)"}
@@ -65,18 +70,53 @@ STACK_KEYWORDS = {
     "atlan": "Atlan",
 }
 
-# Switching triggers — a company describing its own orchestration pain.
+# Switching triggers — a company describing its own orchestration pain, in the
+# words real job ads actually use. Substring match against lowercased text.
+#
+# Bare "orchestration" and "on-call" are deliberately NOT here: they are normal
+# English and fired on an executive-assistant posting. They only count as part
+# of a data-specific phrase below.
 TRIGGER_PHRASES = [
-    "maintain our airflow",
-    "airflow deployment",
+    "self-hosted airflow",
+    "manage our airflow",
+    "own our airflow",
+    "airflow at scale",
+    "migrating off",
     "migrate from airflow",
     "airflow 2",
-    "on-call",
+    "reduce pipeline",
     "pipeline reliability",
-    "reduce maintenance",
-    "self-hosted",
-    "orchestration",
+    "on-call for data",
+    "data on-call",
+    "reduce maintenance burden",
+    "own our orchestration",
+    "scale our orchestration",
+    "data platform reliability",
+    "pipeline failures",
+    "reduce toil",
 ]
+
+# A trigger only fires if the SAME posting also talks about data. This is what
+# stops a generic phrase in a non-technical ad from counting as buying signal.
+DATA_CONTEXT_WORDS = (
+    "airflow",
+    "dagster",
+    "dbt",
+    "pipeline",
+    "orchestration",
+    "data platform",
+    "warehouse",
+)
+
+# "Monte Carlo" is a statistical method long before it is a data-observability
+# vendor, and fintech risk-modelling ads are full of it. Only count it with
+# vendor context in the same posting.
+MONTE_CARLO_CONTEXT = (
+    "monte carlo data",
+    "observability",
+    "data quality",
+    "lineage",
+)
 
 _SCRIPT_RE = re.compile(r"<(script|style)[^>]*>.*?</\1>", re.S | re.I)
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -149,11 +189,19 @@ def html_to_text(markup: str) -> str:
     return _WS_RE.sub(" ", text).lower()
 
 
-def job_links(markup: str, source_url: str) -> list[str]:
+def page_limit(url: str) -> int:
+    """How many postings to sample from one source."""
+    host = urlparse(url).netloc.lower()
+    return MAX_JOB_PAGES_GREENHOUSE if host in GREENHOUSE_HOSTS else MAX_JOB_PAGES_PER_SOURCE
+
+
+def job_links(markup: str, source_url: str, limit: int | None = None) -> list[str]:
     """Individual job-posting URLs linked from an index page.
 
     Same-host links only, so a scan never wanders off the careers site.
     """
+    if limit is None:
+        limit = page_limit(source_url)
     source = urlparse(source_url)
     found: list[str] = []
     seen = set()
@@ -172,7 +220,7 @@ def job_links(markup: str, source_url: str) -> list[str]:
         if clean not in seen:
             seen.add(clean)
             found.append(clean)
-    return found[:MAX_JOB_PAGES_PER_SOURCE]
+    return found[:limit]
 
 
 # --------------------------------------------------------------------------
@@ -194,8 +242,22 @@ def _rank(item: dict) -> tuple:
     return (-item["confidence"], len(item["evidence"]), item["evidence"])
 
 
+def has_data_context(text: str) -> bool:
+    """True if this posting talks about data at all."""
+    return any(word in text for word in DATA_CONTEXT_WORDS)
+
+
+def monte_carlo_is_vendor(text: str) -> bool:
+    """Distinguish the vendor from the statistical method."""
+    return any(word in text for word in MONTE_CARLO_CONTEXT)
+
+
 def match_text(pages: list[tuple[str, str]]) -> list[dict]:
     """Scan (source_url, text) pairs for stack tools and switching triggers.
+
+    Context is evaluated PER PAGE, not across the whole scan: a trigger phrase
+    counts only when that same posting also talks about data, and "monte carlo"
+    counts only with data-observability context in that posting.
 
     Deduped so a keyword found across many postings returns once, keeping the
     shortest evidence string. Nothing here sets self_hosted_orchestrator: a job
@@ -224,9 +286,18 @@ def match_text(pages: list[tuple[str, str]]) -> list[dict]:
     for source, text in pages:
         if not text:
             continue
+
         for keyword, tool in STACK_KEYWORDS.items():
-            if _word_match(text, keyword):
-                add(tool, keyword, source, is_trigger=False)
+            if not _word_match(text, keyword):
+                continue
+            # Drop the statistical method; keep the vendor.
+            if keyword == "monte carlo" and not monte_carlo_is_vendor(text):
+                continue
+            add(tool, keyword, source, is_trigger=False)
+
+        # Triggers require data context in the same posting.
+        if not has_data_context(text):
+            continue
         for phrase in TRIGGER_PHRASES:
             if phrase in text:
                 add(phrase, phrase, source, is_trigger=True)
@@ -281,7 +352,7 @@ async def detect(domain: str, client: httpx.AsyncClient | None = None) -> dict:
                 continue
             seen_urls.add(final_url)
             pages.append((final_url, html_to_text(markup)))
-            for link in job_links(markup, final_url):
+            for link in job_links(markup, final_url, page_limit(final_url)):
                 if link not in wanted and link not in seen_urls:
                     wanted.append(link)
 
