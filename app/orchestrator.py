@@ -27,6 +27,10 @@ from app.patterns import is_vendor_domain
 STATUS_ERROR = "error"
 LEVEL_EXCLUDED = "EXCLUDED"
 
+# Batch concurrency. Every domain fans out to three detectors, so this is the
+# knob that keeps a 20-domain demo polite to crt.sh, DoH and Greenhouse.
+DEFAULT_CONCURRENCY = 5
+
 # The client default matches ct_logs' intended timeout; dns and careers set
 # their own shorter timeouts per request.
 _CLIENT_TIMEOUT = ct_logs.TIMEOUT_SECONDS
@@ -112,6 +116,7 @@ def excluded_verdict(domain: str) -> dict:
         "trigger_level": LEVEL_EXCLUDED,
         "trigger_evidence": [],
         "self_hosted_orchestrator": False,
+        "trigger_basis": None,
         "signals_summary": {
             "ct_logs": "vendor_domain_excluded",
             "dns": "vendor_domain_excluded",
@@ -144,6 +149,7 @@ def to_api_verdict(verdict: dict) -> dict:
         "trigger_level": verdict["trigger_level"],
         "trigger_evidence": verdict["trigger_evidence"],
         "self_hosted_orchestrator": verdict["self_hosted_orchestrator"],
+        "trigger_basis": verdict.get("trigger_basis"),
         "signals_summary": verdict["signals"],
         "fit": verdict["fit"],
     }
@@ -184,14 +190,34 @@ async def scan(domain: str, client: httpx.AsyncClient | None = None) -> dict:
     return to_api_verdict(verdict)
 
 
-async def scan_many(domains: list[str]) -> list[dict]:
-    """Scan several domains over one client, HOT first."""
+async def scan_many(
+    domains: list[str],
+    concurrency: int = DEFAULT_CONCURRENCY,
+) -> list[dict]:
+    """Scan several domains over one client, HOT first.
+
+    Concurrency is capped because a batch multiplies every detector: 20 domains
+    is 20 crt.sh queries, 320 DoH lookups and up to 20 Greenhouse boards. Five
+    at a time keeps a demo fast without hammering anyone's infrastructure.
+
+    Input is normalised and deduped first, so a messy pasted list — full URLs,
+    www prefixes, the same company twice — scans each company once.
+    """
+    seen: list[str] = []
+    for raw in domains or []:
+        normalised = normalise_domain_input(raw)
+        if normalised and normalised not in seen:
+            seen.append(normalised)
+    if not seen:
+        return []
+
+    limiter = asyncio.Semaphore(max(1, concurrency))
+
+    async def one(domain: str) -> dict:
+        async with limiter:
+            return await scan(domain, client)
+
     async with httpx.AsyncClient(timeout=_CLIENT_TIMEOUT, headers=_HEADERS) as client:
-        verdicts = await asyncio.gather(*[scan(d, client) for d in domains])
-    ordered = scoring.sort_verdicts([
-        {**v, "tools": [{**t, "confirmations": len(t["signals"])} for t in v["tools"]]}
-        for v in verdicts
-    ])
-    return [{k: v for k, v in verdict.items() if k != "tools"} | {
-        "tools": [{k: t[k] for k in t if k != "confirmations"} for t in verdict["tools"]]
-    } for verdict in ordered]
+        verdicts = await asyncio.gather(*[one(d) for d in seen])
+
+    return scoring.sort_verdicts(list(verdicts))

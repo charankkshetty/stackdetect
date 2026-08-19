@@ -20,6 +20,10 @@ from app import ledger, orchestrator
 
 STATIC_DIR = Path(__file__).parent / "static"
 
+# A ceiling on one request so a paste of a thousand rows cannot tie the service
+# up. The UI chunks anyway; this is the backstop.
+MAX_BATCH = 50
+
 app = FastAPI(title="stackdetect", version="0.1.0")
 
 # Open CORS so the static page can call the API from any origin.
@@ -34,6 +38,10 @@ app.add_middleware(
 
 class ScanRequest(BaseModel):
     domain: str
+
+
+class BatchScanRequest(BaseModel):
+    domains: list[str]
 
 
 @app.get("/")
@@ -78,3 +86,24 @@ async def scan(req: ScanRequest) -> dict:
     # stay at zero until the enrichers are wired in.
     verdict["credits"] = ledger.usage()
     return verdict
+
+
+@app.post("/scan_batch")
+async def scan_batch(req: BatchScanRequest) -> dict:
+    """Scan several domains concurrently, hottest first.
+
+    Input is normalised and deduped by the orchestrator, so a list pasted
+    straight out of a spreadsheet — full URLs, www prefixes, duplicates —
+    works without cleaning. Returns {verdicts, credits}: the credits readout
+    keeps the 300-per-provider cap visible in the UI, which is the whole point
+    of tracking it.
+    """
+    if not req.domains:
+        raise HTTPException(status_code=400, detail="domains is required")
+    if len(req.domains) > MAX_BATCH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"too many domains: {len(req.domains)} (max {MAX_BATCH})",
+        )
+    verdicts = await orchestrator.scan_many(req.domains)
+    return {"verdicts": verdicts, "credits": ledger.usage()}

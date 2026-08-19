@@ -31,7 +31,31 @@ HOT = "HOT"
 WARM = "WARM"
 COLD = "COLD"
 
-_LEVEL_ORDER = {HOT: 0, WARM: 1, COLD: 2}
+EXCLUDED = "EXCLUDED"
+
+_LEVEL_ORDER = {HOT: 0, WARM: 1, COLD: 2, EXCLUDED: 3}
+
+# Why a trigger fired. Two HOTs are not the same prospect:
+#   confirmed_running  a live DNS/CT hit — the host resolves, stable scan to
+#                      scan, and the strongest thing a rep can quote.
+#   likely_running     job-ad co-occurrence — real signal, but job boards
+#                      rotate, so it can move between scans.
+BASIS_CONFIRMED = "confirmed_running"
+BASIS_LIKELY = "likely_running"
+BASIS_NAMED = "named_only"
+
+
+def trigger_basis(level: str, self_hosted_orchestrator: bool) -> str | None:
+    """Classify WHY the trigger fired, for the UI to surface.
+
+    Exact by construction: a live signal always sets the hard flag and a
+    co-occurrence HOT never does.
+    """
+    if level == HOT:
+        return BASIS_CONFIRMED if self_hosted_orchestrator else BASIS_LIKELY
+    if level == WARM:
+        return BASIS_NAMED
+    return None
 
 # Tools that ARE orchestration — the products Orchestra displaces.
 ORCHESTRATOR_TOOLS = frozenset({
@@ -194,6 +218,7 @@ def build_verdict(
     entries = collect_evidence(ct, dns, careers)
     tools = score_stack(entries)
     trigger_level, trigger_evidence = score_trigger(entries, careers)
+    hard_flag = any(t["self_hosted_orchestrator"] for t in tools)
 
     return {
         "domain": domain,
@@ -201,7 +226,8 @@ def build_verdict(
         "trigger_level": trigger_level,
         "trigger_evidence": trigger_evidence,
         # Hard flag: live DNS/CT only. A job ad is never proof it is running.
-        "self_hosted_orchestrator": any(t["self_hosted_orchestrator"] for t in tools),
+        "self_hosted_orchestrator": hard_flag,
+        "trigger_basis": trigger_basis(trigger_level, hard_flag),
         # What each detector could actually see — a COLD verdict from a failed
         # scan is not the same as a COLD verdict from a complete one.
         "signals": {
@@ -216,12 +242,18 @@ def build_verdict(
 
 
 def sort_verdicts(verdicts: list[dict]) -> list[dict]:
-    """HOT first, then by corroborated stack depth. Rep works top-down."""
+    """HOT first, then by corroborated stack depth. Rep works top-down.
+
+    Within a level, a confirmed-running hit outranks a likely-running one: a
+    resolving host is stable and quotable, while job-ad co-occurrence can move
+    between scans as boards rotate.
+    """
     return sorted(
         verdicts,
         key=lambda v: (
             _LEVEL_ORDER.get(v["trigger_level"], 9),
-            -sum(t["confirmations"] for t in v["tools"]),
+            0 if v.get("self_hosted_orchestrator") else 1,
+            -sum(t.get("confirmations", len(t.get("signals") or [])) for t in v["tools"]),
             -len(v["tools"]),
             v["domain"],
         ),
