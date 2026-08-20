@@ -10,6 +10,8 @@ I then built a system that finds these companies automatically, and scored a rea
 
 **The full list is here: [Orchestra Target Accounts (Google Sheet)](https://docs.google.com/spreadsheets/d/18xjs1mfUL3_t7KrMAW-CXX19ZmU1NM7FJ9EQN1hfWIU/edit?usp=sharing)**
 
+The reasoning behind each decision, and the customer data it came from, is in [DECISIONS.md](./DECISIONS.md).
+
 ---
 
 ## What I changed from your starting Ideal Customer Profile
